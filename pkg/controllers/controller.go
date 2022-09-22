@@ -11,35 +11,41 @@ import (
 	"github.com/rancher/ui-plugin-operator/pkg/controllers/plugin"
 	catalog "github.com/rancher/ui-plugin-operator/pkg/generated/controllers/catalog.cattle.io"
 	plugincontroller "github.com/rancher/ui-plugin-operator/pkg/generated/controllers/catalog.cattle.io/v1"
+	"github.com/rancher/wrangler/pkg/apply"
+	"github.com/rancher/wrangler/pkg/generated/controllers/core"
+	corecontroller "github.com/rancher/wrangler/pkg/generated/controllers/core/v1"
 	"github.com/rancher/wrangler/pkg/generic"
 	"github.com/rancher/wrangler/pkg/leader"
 	"github.com/rancher/wrangler/pkg/ratelimit"
 	"github.com/rancher/wrangler/pkg/start"
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/workqueue"
 )
 
-type appContext struct {
+type AppContext struct {
 	plugincontroller.Interface
 	K8s      kubernetes.Interface
+	Core     corecontroller.Interface
+	Apply    apply.Apply
 	starters []start.Starter
 }
 
-func (a *appContext) start(ctx context.Context) error {
+func (a *AppContext) start(ctx context.Context) error {
 	return start.All(ctx, 50, a.starters...)
 }
 
-func Register(ctx context.Context, systemNamespace, controllerName, nodeName string, cfg clientcmd.ClientConfig) error {
+func Register(ctx context.Context, appCtx *AppContext, systemNamespace, controllerName, nodeName string, cfg clientcmd.ClientConfig) error {
 	if len(systemNamespace) == 0 {
 		return errors.New("cannot start controllers on system namespace: system namespace not provided")
 	}
-	appCtx, err := newContext(ctx, systemNamespace, cfg)
-	if err != nil {
-		return err
-	}
+	// appCtx, err := NewContext(ctx, systemNamespace, cfg)
+	// if err != nil {
+	// 	return err
+	// }
 	if len(controllerName) == 0 {
 		controllerName = "plugin-operator"
 	}
@@ -74,7 +80,7 @@ func controllerFactory(rest *rest.Config) (controller.SharedControllerFactory, e
 	}), nil
 }
 
-func newContext(ctx context.Context, systemNamespace string, cfg clientcmd.ClientConfig) (*appContext, error) {
+func NewContext(ctx context.Context, systemNamespace string, cfg clientcmd.ClientConfig) (*AppContext, error) {
 	client, err := cfg.ClientConfig()
 	if err != nil {
 		return nil, err
@@ -100,9 +106,26 @@ func newContext(ctx context.Context, systemNamespace string, cfg clientcmd.Clien
 	}
 	pluginv := plugin.Catalog().V1()
 
-	return &appContext{
+	discovery, err := discovery.NewDiscoveryClientForConfig(client)
+	if err != nil {
+		return nil, err
+	}
+
+	core, err := core.NewFactoryFromConfigWithOptions(client, &generic.FactoryOptions{
+		SharedControllerFactory: scf,
+	})
+	if err != nil {
+		return nil, err
+	}
+	corev := core.Core().V1()
+
+	apply := apply.New(discovery, apply.NewClientFactory(client))
+
+	return &AppContext{
 		Interface: pluginv,
 		K8s:       k8s,
+		Core:      corev,
+		Apply:     apply,
 		starters: []start.Starter{
 			plugin,
 		},

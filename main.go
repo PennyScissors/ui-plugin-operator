@@ -1,8 +1,8 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	_ "net/http/pprof"
@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
+	"github.com/rancher/steve/pkg/aggregation"
 	"github.com/rancher/ui-plugin-operator/pkg/controllers"
 	"github.com/rancher/ui-plugin-operator/pkg/controllers/plugin"
 	"github.com/rancher/ui-plugin-operator/pkg/crd"
@@ -57,22 +58,47 @@ func (a *PluginOperator) Run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	r := mux.NewRouter()
-	r.HandleFunc("/", indexHandler)
-	r.HandleFunc("/index.yaml", indexHandler)
-	r.HandleFunc("/{name}/{version}/{rest:.*}", pluginHandler)
-	http.Handle("/", r)
+	appCtx, err := controllers.NewContext(ctx, a.Namespace, cfg)
+	if err != nil {
+		return err
+	}
 
+	// r := mux.NewRouter()
+	// r.HandleFunc("/", indexHandler)
+	// r.HandleFunc("/index.yaml", indexHandler)
+	// r.HandleFunc("/{name}/{version}/{rest:.*}", pluginHandler)
+	// http.Handle("/", r)
+
+	// go func() {
+	// 	log.Println(http.ListenAndServe(":8080", nil))
+	// }()
+
+	handler := HandleHooks(ctx, appCtx, a.Namespace)
 	go func() {
-		log.Println(http.ListenAndServe(":8080", nil))
+		logrus.Info(http.ListenAndServe(":8080", handler))
 	}()
 
-	if err := controllers.Register(ctx, a.Namespace, a.ControllerName, a.NodeName, cfg); err != nil {
+	if err := controllers.Register(ctx, appCtx, a.Namespace, a.ControllerName, a.NodeName, cfg); err != nil {
 		return err
 	}
 
 	<-cmd.Context().Done()
 	return nil
+}
+
+func HandleHooks(ctx context.Context, appCtx *controllers.AppContext, namespace string) http.Handler {
+	root := mux.NewRouter()
+	root.HandleFunc("/", indexHandler)
+	root.HandleFunc("/index.yaml", indexHandler)
+	root.HandleFunc("/{name}/{version}/{rest:.*}", pluginHandler)
+	root.UseEncodedPath()
+	aggregation.Watch(ctx,
+		appCtx.Core.Secret(),
+		namespace,
+		"stv-aggregation",
+		root)
+
+	return root
 }
 
 func main() {
